@@ -108,24 +108,13 @@ esp_err_t ptc06_init(ptc06_t **out_cam, const ptc06_config_t *cfg) {
     ESP_ERROR_CHECK(uart_param_config(cfg->uart_num, &ucfg));
     ESP_ERROR_CHECK(uart_set_pin(cfg->uart_num, cfg->tx_pin, cfg->rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    ESP_LOGI(TAG, "Waiting 2.5s for camera boot...");
-    vTaskDelay(pdMS_TO_TICKS(2500)); 
-
-    // Flush any boot-up text/garbage from the camera
+    // Limpiar cualquier basura del buffer generada durante el cambio de velocidad
     uart_flush_input(cam->cfg.uart_num);
 
-    if (ptc06_reset(cam) != ESP_OK) {
-        ESP_LOGW(TAG, "Camera did not ACK reset. Retrying once...");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        uart_flush_input(cam->cfg.uart_num);
-        if(ptc06_reset(cam) != ESP_OK) {
-             ESP_LOGE(TAG, "Camera initialization failed");
-             // We return OK here but the camera might be unresponsive. 
-             // Depending on app logic, you might want to return ESP_FAIL.
-        }
-    } else {
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
+    // ELIMINADO: vTaskDelay(2500) -> La cámara ya está encendida y lista.
+    // ELIMINADO: ptc06_reset(cam) -> Evita que la cámara vuelva a 38400 bps.
+
+    ESP_LOGI(TAG, "Cámara enlazada a la librería sin reiniciar.");
 
     *out_cam = cam;
     return ESP_OK;
