@@ -35,6 +35,38 @@ void wait_for_keypress(char target_key) {
     }
 }
 
+// --- ALGORITMO: Escalado Nearest-Neighbor para compensar la distancia ---
+void scale_image_down(uint8_t* src, uint8_t* dst, float scale_factor) {
+    int new_w = (int)(IMAGE_WIDTH * scale_factor);
+    int new_h = (int)(IMAGE_HEIGHT * scale_factor);
+    
+    // Calcular el offset para mantener la imagen escalada en el centro
+    int offset_x = (IMAGE_WIDTH - new_w) / 2;
+    int offset_y = (IMAGE_HEIGHT - new_h) / 2;
+
+    // Llenar el fondo de negro para evitar basura en los bordes
+    memset(dst, 0, IMAGE_WIDTH * IMAGE_HEIGHT * 3);
+
+    for (int y = 0; y < new_h; y++) {
+        for (int x = 0; x < new_w; x++) {
+            // Mapeo inverso al píxel original
+            int src_x = (int)(x / scale_factor);
+            int src_y = (int)(y / scale_factor);
+
+            // Bounds check de seguridad
+            if (src_x >= IMAGE_WIDTH) src_x = IMAGE_WIDTH - 1;
+            if (src_y >= IMAGE_HEIGHT) src_y = IMAGE_HEIGHT - 1;
+
+            int src_idx = (src_y * IMAGE_WIDTH + src_x) * 3;
+            int dst_idx = ((y + offset_y) * IMAGE_WIDTH + (x + offset_x)) * 3;
+
+            dst[dst_idx] = src[src_idx];         // R
+            dst[dst_idx + 1] = src[src_idx + 1]; // G
+            dst[dst_idx + 2] = src[src_idx + 2]; // B
+        }
+    }
+}
+
 // --- ALGORITMO: Alineación de Paralaje Cero 2D ---
 offset_2d_t calculate_alignment_offset(uint8_t* img_left, uint8_t* img_right) {
     long min_sad = 2147483647; 
@@ -197,48 +229,67 @@ extern "C" void app_main(void) {
     size_t len1 = 0, len2 = 0;
     uint8_t *rgb1 = NULL, *rgb2 = NULL;
 
-    printf("\n--- ESP32 Sistema 3D: Prueba de Desplazamiento Horizontal ---\n");
+    printf("\n--- ESP32 Sistema de Adquisicion Estereoscopica Listo ---\n");
 
     while (1) {
         printf("\n============================================\n");
-        printf("Apunta al objeto. Presiona 'p' para la FOTO 1...\n");
+        printf("Apunta al objeto (Aprox 20m). Presiona 'p' para la FOTO 1...\n");
         wait_for_keypress('p');
         
-        printf("[1/5] Capturando Foto 1 (Posicion A)...\n");
+        printf("[1/6] Capturando Foto 1 (Posicion A)...\n");
         if (ptc06_capture_jpeg_to_buffer(cam, &jpg1, &len1) != ESP_OK) continue;
         
         printf(">> FOTO 1 LISTA. \n");
-        printf(">> Da UN PASO LATERAL (izq o der). NO te acerques ni alejes.\n");
+        printf(">> Ahora da un paso hacia atras y un paso lateral.\n");
         printf(">> Presiona 'p' para la FOTO 2...\n");
         wait_for_keypress('p');
         
-        printf("[2/5] Capturando Foto 2 (Posicion B)...\n");
+        printf("[2/6] Capturando Foto 2 (Posicion B)...\n");
         if (ptc06_capture_jpeg_to_buffer(cam, &jpg2, &len2) != ESP_OK) {
             free(jpg1); jpg1 = NULL;
             continue;
         }
 
         // --- PROCESAMIENTO ---
-        printf("[3/5] Decodificando JPEGs en PSRAM...\n");
+        printf("[3/6] Decodificando JPEGs en PSRAM...\n");
         rgb1 = decode_jpeg_to_rgb(jpg1, len1);
         rgb2 = decode_jpeg_to_rgb(jpg2, len2);
 
         if (rgb1 && rgb2) {
-            // Nota: Se omitió el escalado en esta prueba. Pasamos directo al cálculo 2D.
-            printf("[4/5] Analisis DSP: Calculando correccion 2D pura...\n");
-            offset_2d_t offset = calculate_alignment_offset(rgb1, rgb2);
-            printf("      Desplazamiento detectado: X = %d px, Y = %d px\n", offset.x, offset.y);
+            printf("[4/6] Escalando Foto 1 para compensar alejamiento...\n");
+            
+            // ¡IMPORTANTE! Ajusta este factor según tu prueba:
+            // Si pasas de 20m a 21m, el factor es 20/21 = ~0.95
+            // Si pasas de 20m a 22m, el factor es 20/22 = ~0.90
+            float scale_factor = 0.95f; 
+            
+            uint8_t *rgb1_scaled = (uint8_t*)heap_caps_malloc(IMAGE_WIDTH * IMAGE_HEIGHT * 3, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            
+            if(rgb1_scaled) {
+                scale_image_down(rgb1, rgb1_scaled, scale_factor);
+                
+                // Liberamos el rgb1 original y redirigimos el puntero al escalado
+                heap_caps_free(rgb1);
+                rgb1 = rgb1_scaled; 
 
-            printf("[5/5] Generando Anaglifo 3D...\n");
-            apply_anaglyph_merge(rgb1, rgb2, offset);
+                printf("[5/6] Analisis DSP: Calculando correccion 2D...\n");
+                offset_2d_t offset = calculate_alignment_offset(rgb1, rgb2);
+                printf("      Desplazamiento detectado: X = %d px, Y = %d px\n", offset.x, offset.y);
 
-            // --- TRANSMISIÓN POR CONSOLA (Raw temporal para PC) ---
-            int pixel_count = IMAGE_WIDTH * IMAGE_HEIGHT;
-            size_t total_raw_size = pixel_count * 3;
-            printf("IMG_START:%d\n", total_raw_size);
-            vTaskDelay(50 / portTICK_PERIOD_MS); 
-            uart_write_bytes(UART_NUM_0, (const char*)rgb1, total_raw_size);
-            printf("\nProceso exitoso. Listo para nueva prueba.\n");
+                printf("[6/6] Generando Anaglifo 3D...\n");
+                apply_anaglyph_merge(rgb1, rgb2, offset);
+
+                // --- TRANSMISIÓN POR CONSOLA (Raw temporal para PC) ---
+                // Nota: Para la misión real, aquí deberás comprimir rgb1 a JPEG nuevamente.
+                int pixel_count = IMAGE_WIDTH * IMAGE_HEIGHT;
+                size_t total_raw_size = pixel_count * 3;
+                printf("IMG_START:%d\n", total_raw_size);
+                vTaskDelay(50 / portTICK_PERIOD_MS); 
+                uart_write_bytes(UART_NUM_0, (const char*)rgb1, total_raw_size);
+                printf("\nProceso exitoso. Listo para nueva prueba.\n");
+            } else {
+                ESP_LOGE(TAG, "Fallo al asignar memoria para escalado.");
+            }
         } else {
             printf("Error critico en decodificacion.\n");
         }
