@@ -23,6 +23,18 @@ typedef struct {
     int y;
 } offset_2d_t;
 
+// --- Función auxiliar para esperar una tecla en la consola ---
+void wait_for_keypress(char target_key) {
+    uint8_t cmd = 0;
+    while (1) {
+        int len = uart_read_bytes(UART_NUM_0, &cmd, 1, 100 / portTICK_PERIOD_MS);
+        if (len > 0 && cmd == target_key) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50)); // Evitar saturar el Watchdog
+    }
+}
+
 // --- ALGORITMO: Alineación de Paralaje Cero 2D ---
 offset_2d_t calculate_alignment_offset(uint8_t* img_left, uint8_t* img_right) {
     long min_sad = 2147483647; 
@@ -33,7 +45,7 @@ offset_2d_t calculate_alignment_offset(uint8_t* img_left, uint8_t* img_right) {
     int block_size = 64;
     int half_block = block_size / 2;
     
-    // Rango de búsqueda: +/- 30 pixeles en X, +/- 15 pixeles en Y (El drift vertical es menor)
+    // Rango de búsqueda: +/- 30 pixeles en X, +/- 15 pixeles en Y
     int search_range_x = 30; 
     int search_range_y = 15; 
 
@@ -121,7 +133,7 @@ uint8_t* decode_jpeg_to_rgb(uint8_t *jpeg_data, size_t jpeg_len) {
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Decodificacion JPEG fallo. Codigo: %d", ret);
-        heap_caps_free(out_buffer); // Uso correcto de liberación de PSRAM
+        heap_caps_free(out_buffer);
         return NULL;
     }
     return out_buffer; 
@@ -178,64 +190,63 @@ extern "C" void app_main(void) {
     }
     ptc06_set_resolution(cam, PTC06_RES_320x240);
 
-    // Consola para debug
+    // Consola para debug y comandos
     uart_driver_install(UART_NUM_0, 4096, 0, 0, NULL, 0);
 
     uint8_t *jpg1 = NULL, *jpg2 = NULL;
     size_t len1 = 0, len2 = 0;
     uint8_t *rgb1 = NULL, *rgb2 = NULL;
 
-    printf("\n--- ESP32 Sistema de Adquisicion Estereoscopica Listo ---\n");
-    printf("Presiona 'p' para iniciar secuencia automatica (simulacion de vuelo).\n");
+    printf("\n--- ESP32 Sistema 3D: Prueba de Desplazamiento Horizontal ---\n");
 
     while (1) {
-        uint8_t cmd = 0;
-        int len = uart_read_bytes(UART_NUM_0, &cmd, 1, 50 / portTICK_PERIOD_MS);
+        printf("\n============================================\n");
+        printf("Apunta al objeto. Presiona 'p' para la FOTO 1...\n");
+        wait_for_keypress('p');
         
-        // Simulación: Presionar 'p' dispara todo el proceso seguido
-        if (len > 0 && cmd == 'p') {
-            
-            // --- CAPTURA RÁPIDA (El equivalente al ascenso) ---
-            printf("\n[1/5] Capturando Foto 1 (Posicion A)...\n");
-            if (ptc06_capture_jpeg_to_buffer(cam, &jpg1, &len1) != ESP_OK) continue;
-            
-            // Simular el tiempo de deriva horizontal (e.g., 3 segundos)
-            printf("      Esperando desplazamiento del CanSat (3s)...\n");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            
-            printf("[2/5] Capturando Foto 2 (Posicion B)...\n");
-            if (ptc06_capture_jpeg_to_buffer(cam, &jpg2, &len2) != ESP_OK) continue;
-
-            // --- PROCESAMIENTO ---
-            printf("[3/5] Decodificando JPEGs en PSRAM...\n");
-            rgb1 = decode_jpeg_to_rgb(jpg1, len1);
-            rgb2 = decode_jpeg_to_rgb(jpg2, len2);
-
-            if (rgb1 && rgb2) {
-                printf("[4/5] Analisis DSP: Calculando correccion 2D...\n");
-                offset_2d_t offset = calculate_alignment_offset(rgb1, rgb2);
-                printf("      Desplazamiento detectado: X = %d px, Y = %d px\n", offset.x, offset.y);
-
-                printf("[5/5] Generando Anaglifo 3D...\n");
-                apply_anaglyph_merge(rgb1, rgb2, offset);
-
-                // --- TRANSMISIÓN POR CONSOLA (Para debug local) ---
-                int pixel_count = IMAGE_WIDTH * IMAGE_HEIGHT;
-                size_t total_raw_size = pixel_count * 3;
-                printf("IMG_START:%d\n", total_raw_size);
-                vTaskDelay(50 / portTICK_PERIOD_MS); 
-                uart_write_bytes(UART_NUM_0, (const char*)rgb1, total_raw_size);
-                printf("\nProceso exitoso. Sistema reiniciado.\n");
-            } else {
-                printf("Error critico en decodificacion.\n");
-            }
-
-            // --- LIMPIEZA RIGUROSA DE MEMORIA ---
-            if (rgb1) { heap_caps_free(rgb1); rgb1 = NULL; }
-            if (rgb2) { heap_caps_free(rgb2); rgb2 = NULL; }
-            // Asumiendo que la librería usa el malloc estándar de C
-            if (jpg1) { free(jpg1); jpg1 = NULL; }
-            if (jpg2) { free(jpg2); jpg2 = NULL; }
+        printf("[1/5] Capturando Foto 1 (Posicion A)...\n");
+        if (ptc06_capture_jpeg_to_buffer(cam, &jpg1, &len1) != ESP_OK) continue;
+        
+        printf(">> FOTO 1 LISTA. \n");
+        printf(">> Da UN PASO LATERAL (izq o der). NO te acerques ni alejes.\n");
+        printf(">> Presiona 'p' para la FOTO 2...\n");
+        wait_for_keypress('p');
+        
+        printf("[2/5] Capturando Foto 2 (Posicion B)...\n");
+        if (ptc06_capture_jpeg_to_buffer(cam, &jpg2, &len2) != ESP_OK) {
+            free(jpg1); jpg1 = NULL;
+            continue;
         }
+
+        // --- PROCESAMIENTO ---
+        printf("[3/5] Decodificando JPEGs en PSRAM...\n");
+        rgb1 = decode_jpeg_to_rgb(jpg1, len1);
+        rgb2 = decode_jpeg_to_rgb(jpg2, len2);
+
+        if (rgb1 && rgb2) {
+            // Nota: Se omitió el escalado en esta prueba. Pasamos directo al cálculo 2D.
+            printf("[4/5] Analisis DSP: Calculando correccion 2D pura...\n");
+            offset_2d_t offset = calculate_alignment_offset(rgb1, rgb2);
+            printf("      Desplazamiento detectado: X = %d px, Y = %d px\n", offset.x, offset.y);
+
+            printf("[5/5] Generando Anaglifo 3D...\n");
+            apply_anaglyph_merge(rgb1, rgb2, offset);
+
+            // --- TRANSMISIÓN POR CONSOLA (Raw temporal para PC) ---
+            int pixel_count = IMAGE_WIDTH * IMAGE_HEIGHT;
+            size_t total_raw_size = pixel_count * 3;
+            printf("IMG_START:%d\n", total_raw_size);
+            vTaskDelay(50 / portTICK_PERIOD_MS); 
+            uart_write_bytes(UART_NUM_0, (const char*)rgb1, total_raw_size);
+            printf("\nProceso exitoso. Listo para nueva prueba.\n");
+        } else {
+            printf("Error critico en decodificacion.\n");
+        }
+
+        // --- LIMPIEZA RIGUROSA DE MEMORIA ---
+        if (rgb1) { heap_caps_free(rgb1); rgb1 = NULL; }
+        if (rgb2) { heap_caps_free(rgb2); rgb2 = NULL; }
+        if (jpg1) { free(jpg1); jpg1 = NULL; }
+        if (jpg2) { free(jpg2); jpg2 = NULL; }
     }
 }
